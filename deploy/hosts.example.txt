@@ -1,0 +1,6 @@
+# id        host/IP        (una banca por línea; líneas con # se ignoran)
+# id "-" o "auto": el agente toma el número de /var/local/settings.ini (idBanca) -> banca-NN
+-         10.0.1.11
+-         10.0.1.12
+auto      10.0.1.13
+caja-01   10.0.1.50

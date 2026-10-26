@@ -1,0 +1,65 @@
+{
+  "agents": {
+    "bind": "0.0.0.0",
+    "port": 7070,
+    "token": "cambiar-este-token",
+    "offlineAfterSec": 20,
+    "pingIntervalSec": 10,
+    "allowUnknown": true
+  },
+  "web": {
+    "bind": "0.0.0.0",
+    "port": 8080,
+    "auth": {
+      "user": "admin",
+      "pass": "cambiar"
+    },
+    "rebootCooldownSec": 60
+  },
+  "graylog": {
+    "enabled": true,
+    "host": "graylog.local",
+    "port": 12201,
+    "protocol": "udp",
+    "source": "rpi-monitor",
+    "facility": "rpi-monitor",
+    "compress": false,
+    "metricsEverySec": 0
+  },
+  "thresholds": {
+    "unknownLevel": "warn",
+    "temp_c": {
+      "warn": 70,
+      "crit": 80
+    },
+    "volt_core": null,
+    "lat_ms": {
+      "warn": 100,
+      "crit": 300
+    },
+    "cpu_pct": {
+      "warn": 85,
+      "crit": 95
+    },
+    "mem_pct": {
+      "warn": 85,
+      "crit": 95
+    },
+    "undervoltage": {
+      "now": "crit",
+      "occurred": "warn"
+    },
+    "throttling": {
+      "now": "warn",
+      "occurred": "ok"
+    }
+  },
+  "stationsAuto": {
+    "prefix": "banca-",
+    "start": 0,
+    "count": 53,
+    "pad": 2,
+    "nameFormat": "Banca {n}"
+  },
+  "stations": []
+}

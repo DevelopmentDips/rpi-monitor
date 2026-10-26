@@ -1,0 +1,339 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          rpimon
+# Required-Start:    $local_fs $network
+# Required-Stop:     $local_fs $network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Agente de monitoreo rpimon
+# Description:       Reporta temperatura, voltajes, CPU, memoria y latencia al panel de bancas.
+### END INIT INFO
+#
+# Script de init estilo SysV/BusyBox para SO sin systemd.
+#
+# NO ESCRIBE EN DISCO. El log va siempre a un filesystem en RAM (tmpfs/ramfs),
+# verificando el tipo real en /proc/mounts, para no desgastar la tarjeta o el
+# SSD de la banca. Si no hay ningún tmpfs disponible, no escribe nada.
+# Consecuencia: el log se pierde al reiniciar; queda el del arranque actual,
+# que es justo lo que sirve para ver por qué no levantó. El histórico
+# persistente está en el servidor y en Graylog.
+#
+# En el arranque hay dos condiciones que hay que esperar:
+#   · /var/run (o el tmpfs equivalente) todavía no está montado o poblado
+#   · todavía no hay IP asignada
+
+# --- Traza en el ring buffer del kernel (RAM, no toca el disco) -------------
+# Se lee con `dmesg | grep rpimon`. Es lo primero que se ejecuta y no depende
+# de /var, de encontrar un tmpfs ni de ninguna otra lógica de este script, así
+# que sirve para saber con certeza si el init llegó a ejecutarse al bootear.
+kmsg() { echo "rpimon-init: $*" > /dev/kmsg 2>/dev/null; return 0; }
+kmsg "invocado ($*) pid=$$ ppid=$PPID uid=$(id -u 2>/dev/null) ulimit_stack=$(ulimit -s 2>/dev/null) ulimit_nofile=$(ulimit -n 2>/dev/null)"
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+DAEMON=/usr/local/bin/rpimon
+CONF=/etc/rpimon.conf
+
+# --- Ajustes; se pueden pisar desde /etc/default/rpimon ---
+# LOG_MODE:  ram    -> primer filesystem en RAM disponible (default, no toca el disco)
+#            none   -> no escribir log en ningún lado
+#            syslog -> solo syslog (ojo: syslogd puede estar escribiendo a disco)
+#            /ruta  -> archivo explícito (escribe donde vos digas, disco incluido)
+LOG_MODE=${LOG_MODE:-ram}
+LOG_SYSLOG=${LOG_SYSLOG:-no}   # además mandar a syslog con logger
+LOG_MAX_KB=${LOG_MAX_KB:-256}  # tope del log en RAM
+FS_WAIT=${FS_WAIT:-20}         # espera a que /var/run sea escribible
+NET_WAIT=${NET_WAIT:-60}       # espera a que haya una IP
+ROUTE_FILE=${ROUTE_FILE:-/proc/net/route}
+[ -f /etc/default/rpimon ] && . /etc/default/rpimon
+
+LOG=/dev/null
+PIDFILE=/var/run/rpimon.pid
+
+# ------------------------------------------------------------------ filesystem
+# Tipo de filesystem que contiene una ruta: el punto de montaje más largo de
+# /proc/mounts que sea prefijo de la ruta.
+fs_type_of() {
+    awk -v path="$1" '
+        { mp = $2; type = $3
+          if (mp == "/" || path == mp || substr(path, 1, length(mp) + 1) == mp "/") {
+              if (length(mp) >= best) { best = length(mp); found = type }
+          } }
+        END { print found }' /proc/mounts 2>/dev/null
+}
+
+is_ram_fs() {
+    # resolver symlinks: /var/log suele apuntar a /var/volatile/log (tmpfs)
+    p=$(readlink -f "$1" 2>/dev/null) || p=$1
+    [ -n "$p" ] || p=$1
+    case "$(fs_type_of "$p")" in tmpfs|ramfs) return 0 ;; esac
+    return 1
+}
+
+writable() {
+    # Ojo: `:` es un builtin especial; si su redirección falla, POSIX manda
+    # terminar el shell, y 2>/dev/null solo tapa el mensaje. Por eso, subshell.
+    ( : >> "$1" ) 2>/dev/null || return 1
+    return 0
+}
+
+writable_dir() {
+    [ -d "$1" ] || return 1
+    ( : > "$1/.rpimon.probe" ) 2>/dev/null || return 1
+    rm -f "$1/.rpimon.probe" 2>/dev/null
+    return 0
+}
+
+# Primer directorio en RAM y escribible. /var/log va primero porque en muchas
+# imágenes (Yocto con populate-volatile) ya es un symlink a un tmpfs.
+pick_ram_dir() {
+    for d in /var/log /run /var/volatile/log /var/volatile /dev/shm /tmp; do
+        [ -d "$d" ] || continue
+        is_ram_fs "$d" || continue
+        writable_dir "$d" || continue
+        echo "$d"
+        return 0
+    done
+    return 1
+}
+
+# ------------------------------------------------------------------ logging
+trim_log() {
+    [ "$LOG" = /dev/null ] && return 0
+    sz=$(wc -c < "$LOG" 2>/dev/null)
+    [ -n "$sz" ] || return 0
+    if [ "$sz" -gt $((LOG_MAX_KB * 1024)) ]; then
+        tail -100 "$LOG" > "$LOG.tmp" 2>/dev/null && cat "$LOG.tmp" > "$LOG" 2>/dev/null
+        rm -f "$LOG.tmp" 2>/dev/null
+    fi
+    return 0
+}
+
+prepare_log() {
+    case "$LOG_MODE" in
+        none)
+            LOG=/dev/null; return 0 ;;
+        syslog)
+            LOG=/dev/null; LOG_SYSLOG=yes; return 0 ;;
+        /*)
+            LOG=$LOG_MODE
+            d=$(dirname "$LOG")
+            [ -d "$d" ] || mkdir -p "$d" 2>/dev/null
+            writable_dir "$d" || LOG=/dev/null ;;
+        *)
+            d=$(pick_ram_dir)   # ya verifica que el directorio sea escribible
+            if [ -n "$d" ]; then
+                LOG="$d/rpimon.log"
+            else
+                LOG=/dev/null
+                NO_RAM=1
+            fi ;;
+    esac
+    trim_log
+    return 0
+}
+
+log() {
+    ts=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
+    [ "$LOG" = /dev/null ] || echo "$ts [init] $*" >> "$LOG" 2>/dev/null
+    if [ "$LOG_SYSLOG" = yes ] && command -v logger >/dev/null 2>&1; then
+        logger -t rpimon "$*" 2>/dev/null
+    fi
+    return 0
+}
+
+# El pidfile también tiene que caer en RAM.
+prepare_pidfile() {
+    [ -d /var/run ] || mkdir -p /var/run 2>/dev/null
+    if is_ram_fs /var/run; then
+        [ -f "$PIDFILE" ] && return 0
+        if writable "$PIDFILE"; then rm -f "$PIDFILE" 2>/dev/null; return 0; fi
+    fi
+    for d in /run /var/volatile/run /dev/shm /tmp; do
+        [ -d "$d" ] || continue
+        is_ram_fs "$d" || continue
+        writable "$d/.rpimon.probe" || continue
+        rm -f "$d/.rpimon.probe" 2>/dev/null
+        PIDFILE="$d/rpimon.pid"
+        return 0
+    done
+    # Sin tmpfs: queda /var/run (un archivo diminuto, una escritura por arranque).
+    return 0
+}
+
+prepare() {
+    prepare_log
+    prepare_pidfile
+    [ -n "${NO_RAM:-}" ] && echo "rpimon: no hay tmpfs para el log; se corre sin log" >&2
+    kmsg "log=$LOG pidfile=$PIDFILE${NO_RAM:+ (sin tmpfs disponible)}"
+    return 0
+}
+
+# ------------------------------------------------------------------ esperas
+fs_ready() {
+    d=$(dirname "$PIDFILE")
+    [ -d "$d" ] || return 1
+    writable "$d/.rpimon.probe" || return 1
+    rm -f "$d/.rpimon.probe" 2>/dev/null
+    return 0
+}
+
+wait_fs() {
+    i=0
+    while [ "$i" -lt "$FS_WAIT" ]; do
+        fs_ready && { [ "$i" -gt 0 ] && log "/var listo tras ${i}s"; return 0; }
+        i=$((i + 1))
+        sleep 1
+        prepare_log       # el tmpfs puede haberse montado recién
+        prepare_pidfile
+    done
+    log "AVISO: /var no quedó listo tras ${FS_WAIT}s, se arranca igual"
+    return 1
+}
+
+net_ready() {
+    if command -v ip >/dev/null 2>&1; then
+        ip -4 -o addr show scope global 2>/dev/null | grep -q 'inet ' && return 0
+    fi
+    if command -v ifconfig >/dev/null 2>&1; then
+        ifconfig 2>/dev/null | grep -oE 'inet (addr:)?[0-9.]+' | grep -qv '127\.' && return 0
+    fi
+    awk 'NR>1 && $2=="00000000" {found=1} END {exit !found}' "$ROUTE_FILE" 2>/dev/null && return 0
+    return 1
+}
+
+wait_net() {
+    i=0
+    while [ "$i" -lt "$NET_WAIT" ]; do
+        net_ready && { [ "$i" -gt 0 ] && log "red lista tras ${i}s"; return 0; }
+        i=$((i + 1))
+        sleep 1
+    done
+    log "AVISO: sin IP tras ${NET_WAIT}s, se arranca igual (el agente reintenta solo)"
+    return 1
+}
+
+# ------------------------------------------------------------------ arranque
+is_running() {
+    [ -f "$PIDFILE" ] || return 1
+    pid=$(cat "$PIDFILE" 2>/dev/null)
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+launch() {
+    if command -v start-stop-daemon >/dev/null 2>&1; then
+        if start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$DAEMON" -- --config "$CONF" >>"$LOG" 2>&1 </dev/null; then
+            sleep 1
+            is_running && { kmsg "agente arrancado pid=$(cat "$PIDFILE")"; log "agente arrancado (pid $(cat "$PIDFILE"))"; return 0; }
+            kmsg "ERROR start-stop-daemon ok pero el proceso no quedo vivo"
+            log "ERROR: start-stop-daemon reportó OK pero el proceso no quedó vivo"
+            return 1
+        fi
+        log "start-stop-daemon falló, se lanza directo"
+    fi
+    "$DAEMON" --config "$CONF" >>"$LOG" 2>&1 </dev/null &
+    echo $! > "$PIDFILE" 2>/dev/null
+    sleep 1
+    if is_running; then
+        kmsg "agente arrancado pid=$(cat "$PIDFILE")"
+        log "agente arrancado (pid $(cat "$PIDFILE"))"
+        return 0
+    fi
+    kmsg "ERROR el agente murio apenas arranco"
+    log "ERROR: el agente murió apenas arrancó. Últimas líneas:"
+    [ "$LOG" = /dev/null ] || tail -5 "$LOG" 2>/dev/null | while read -r l; do log "  | $l"; done
+    return 1
+}
+
+start() {
+    prepare
+    log "start: iniciando (runlevel $(runlevel 2>/dev/null || echo '?'), uptime $(cut -d. -f1 /proc/uptime 2>/dev/null)s, log=$LOG)"
+
+    if is_running; then
+        log "ya estaba corriendo (pid $(cat "$PIDFILE"))"
+        echo "rpimon ya está corriendo (pid $(cat "$PIDFILE"))"
+        return 0
+    fi
+    if [ ! -x "$DAEMON" ]; then
+        kmsg "ERROR falta el binario $DAEMON"
+        log "ERROR: falta el binario $DAEMON"
+        echo "rpimon: falta $DAEMON" >&2
+        return 1
+    fi
+    if [ ! -f "$CONF" ]; then
+        kmsg "ERROR falta la configuracion $CONF"
+        log "ERROR: falta la configuración $CONF"
+        echo "rpimon: falta $CONF" >&2
+        return 1
+    fi
+
+    wait_fs
+
+    echo "Iniciando rpimon"
+    if net_ready; then
+        launch
+    else
+        # En segundo plano para no demorar el arranque del sistema, y con los
+        # descriptores sueltos para no dejar colgada la consola ni una sesión SSH.
+        kmsg "sin IP todavia, esperando hasta ${NET_WAIT}s en segundo plano"
+        log "todavía no hay IP; se espera hasta ${NET_WAIT}s en segundo plano"
+        ( wait_net; launch ) >/dev/null 2>&1 </dev/null &
+        i=0
+        while [ "$i" -lt 3 ] && ! is_running; do sleep 1; i=$((i + 1)); done
+    fi
+    return 0
+}
+
+stop() {
+    prepare
+    echo "Deteniendo rpimon"
+    if is_running; then
+        log "stop: deteniendo pid $(cat "$PIDFILE")"
+        kill "$(cat "$PIDFILE")" 2>/dev/null
+        i=0
+        while is_running && [ $i -lt 10 ]; do sleep 1; i=$((i + 1)); done
+        is_running && { log "no respondió, kill -9"; kill -9 "$(cat "$PIDFILE")" 2>/dev/null; }
+    fi
+    rm -f "$PIDFILE"
+    return 0
+}
+
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart|force-reload) stop; sleep 1; start ;;
+    status)
+        prepare
+        if is_running; then
+            echo "rpimon corriendo (pid $(cat "$PIDFILE")), log en $LOG"
+        else
+            echo "rpimon detenido"
+            if [ "$LOG" = /dev/null ]; then
+                echo "  (sin log en disco: LOG_MODE=$LOG_MODE)"
+            else
+                echo "últimas líneas de $LOG:"
+                tail -10 "$LOG" 2>/dev/null
+            fi
+            exit 3
+        fi ;;
+    runforeground)
+        # Modo supervisado por init (línea `respawn` en /etc/inittab).
+        # El agente corre en primer plano; si muere, init lo vuelve a levantar.
+        prepare
+        kmsg "runforeground: supervisado por init"
+        log "runforeground: arrancando bajo supervisión de init"
+        if [ ! -x "$DAEMON" ]; then
+            kmsg "ERROR falta el binario $DAEMON"
+            sleep 30   # no entrar en un ciclo de respawn a máxima velocidad
+            exit 1
+        fi
+        wait_fs
+        net_ready || wait_net
+        echo $$ > "$PIDFILE" 2>/dev/null   # exec conserva el PID
+        exec "$DAEMON" --config "$CONF" >>"$LOG" 2>&1
+        ;;
+    logpath) prepare; echo "$LOG" ;;
+    *) echo "Uso: $0 {start|stop|restart|status|runforeground|logpath}"; exit 1 ;;
+esac

@@ -1,0 +1,17 @@
+{
+  "name": "rpi-monitor-server",
+  "version": "1.0.0",
+  "description": "Panel en tiempo real para 53 Raspberry Pi (bancas 0 a 52): métricas, alertas a Graylog y reinicio remoto",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js config.json",
+    "dev": "node --watch src/index.js config.json",
+    "simulate": "node tools/simulate-agents.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bancas · rpi-monitor</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="dot" id="conn" title="Conexión con el servidor"></span>
+    <h1>Bancas Raspberry Pi</h1>
+  </div>
+  <div class="counts" id="counts">
+    <span class="pill ok" data-k="ok">0 ok</span>
+    <span class="pill warn" data-k="warn">0 aviso</span>
+    <span class="pill crit" data-k="crit">0 crítico</span>
+    <span class="pill offline" data-k="offline">0 sin conexión</span>
+  </div>
+  <div class="tools">
+    <label class="chk"><input type="checkbox" id="onlyProblems"> solo problemas</label>
+    <input type="search" id="filter" placeholder="filtrar banca…">
+    <button id="toggleAlerts" class="btn ghost">Alertas</button>
+    <span class="graylog" id="graylog" title="Estado de envío a Graylog">Graylog</span>
+    <span class="clock" id="clock"></span>
+  </div>
+</header>
+
+<main>
+  <section id="grid" class="grid"></section>
+  <aside id="alerts" class="alerts">
+    <div class="alerts-head">
+      <strong>Alertas</strong>
+      <button id="clearAlerts" class="btn ghost small">limpiar vista</button>
+    </div>
+    <ul id="alertList"></ul>
+  </aside>
+</main>
+
+<template id="cardTpl">
+  <article class="card">
+    <div class="card-head">
+      <span class="name"></span>
+      <span class="id"></span>
+      <span class="state"></span>
+    </div>
+    <div class="metrics">
+      <div class="metric" data-m="temp_c"><span class="lbl">Temp</span><span class="val">—</span></div>
+      <div class="metric" data-m="volt_core"><span class="lbl">Volt</span><span class="val">—</span></div>
+      <div class="metric" data-m="cpu_pct"><span class="lbl">CPU</span><span class="val">—</span></div>
+      <div class="metric" data-m="mem_pct"><span class="lbl">Mem</span><span class="val">—</span></div>
+      <div class="metric" data-m="lat_ms"><span class="lbl">Lat</span><span class="val">—</span></div>
+      <div class="metric" data-m="undervoltage"><span class="lbl">5V</span><span class="val">—</span></div>
+    </div>
+    <div class="card-foot">
+      <span class="info"></span>
+      <button class="btn reboot" title="Reiniciar esta banca">Reiniciar</button>
+    </div>
+  </article>
+</template>
+
+<div id="toast" class="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>

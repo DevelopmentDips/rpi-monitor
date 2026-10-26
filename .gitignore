@@ -1,0 +1,7 @@
+node_modules/
+server/config.json
+agent/rpimon
+agent/rpimon-arm64
+agent/rpimon-armv7
+deploy/hosts.txt
+deploy/deploy.env

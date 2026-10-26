@@ -1,0 +1,18 @@
+[Unit]
+Description=rpimon - agente de monitoreo Raspberry Pi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/rpimon --config /etc/rpimon.conf
+Restart=always
+RestartSec=3
+# Necesita root para /dev/vcio, ICMP raw y reboot. Si se corre como otro usuario:
+#   - agregar el usuario al grupo de /dev/vcio (video)
+#   - setcap cap_net_raw,cap_sys_boot+ep /usr/local/bin/rpimon
+User=root
+Nice=5
+
+[Install]
+WantedBy=multi-user.target
