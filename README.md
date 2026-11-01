@@ -50,6 +50,12 @@ cd agent && make docker-arm64     # kernel de 64 bits  → rpimon-arm64
 cd agent && make docker-armv7     # kernel de 32 bits  → rpimon-armv7
 ```
 
+Los binarios no van en git (están en `.gitignore`); el que sí se versiona es `agent/rpimon.zip`, el paquete para copiar a mano a una banca. Después de recompilar hay que rehacerlo o queda con binarios viejos:
+
+```bash
+cd agent && make zip              # rpimon.zip con los dos binarios + init/service/conf.example
+```
+
 Si se compila estático contra **glibc** (`make docker-arm64-glibc` o `make STATIC=1` en una distro glibc), la resolución de nombres necesita las libs NSS en la RPi; usando la IP del servidor en `server` no hay problema.
 
 Con un toolchain cruzado instalado: `make CXX=aarch64-linux-gnu-g++ STATIC=1`.
@@ -245,6 +251,8 @@ Como servicio: copiar el proyecto a `/opt/rpi-monitor`, crear el usuario `rpimon
 
 ```bash
 npm run simulate        # 53 agentes falsos (banca 0 … 52) contra 127.0.0.1:7070 con el token del config.example
+SIM_VOLT=fixed npm run simulate    # firmware que devuelve la misma constante en los cuatro rieles
+SIM_VOLT=invalid npm run simulate  # ídem, pero con el agente nuevo marcando volt_valid=false
 ```
 
 ### `config.json`
@@ -271,15 +279,17 @@ npm run simulate        # 53 agentes falsos (banca 0 … 52) contra 127.0.0.1:70
 
 `stationsAuto` genera las bancas del panel: con `start: 0` y `count: 53` van de `banca-00` ("Banca 0") a `banca-52` ("Banca 52"). El `pad` de 2 dígitos es el que hace que `idBanca = "7"` en la Raspberry se corresponda con `banca-07`.
 
-Cada umbral admite `warn`/`crit` (valor ≥) y `warnBelow`/`critBelow` (valor ≤). El color de cada casilla del panel sale de estas reglas; el color de la tarjeta es el peor de sus métricas. Una banca pasa a "sin conexión" si se corta el TCP o no manda datos en `offlineAfterSec`.
+Cada umbral admite `warn`/`crit` (valor ≥) y `warnBelow`/`critBelow` (valor ≤); poner la métrica en `null` la desactiva (se muestra en el panel pero nunca alarma). El color de cada casilla del panel sale de estas reglas; el color de la tarjeta es el peor de sus métricas. Una banca pasa a "sin conexión" si se corta el TCP o no manda datos en `offlineAfterSec`.
 
 **Sobre el voltaje core.** En una Pi 4 debería rondar 0,83–0,95 V y variar con la frecuencia (DVFS), pero hay firmwares que no implementan la consulta y devuelven un valor fijo para *todos* los rieles. Se detecta fácil: si `core`, `sdram_c`, `sdram_p` y `sdram_i` informan exactamente el mismo número, la lectura no significa nada.
 
 ```bash
-vcgencmd measure_volts core; vcgencmd measure_volts sdram_c
+for r in core sdram_c sdram_p sdram_i; do echo -n "$r: "; vcgencmd measure_volts $r; done
 ```
 
-Por eso el umbral viene en `null`, que muestra el valor en el panel pero nunca alarma. Ponerle límites a una constante solo genera 53 críticos falsos. **La señal real de problemas de alimentación es la casilla "5V"**, que sale del bit de subvoltaje de `get_throttled` y sí funciona en estos equipos. Si tu firmware devuelve lecturas reales, se le pueden poner límites de nuevo:
+Esa comprobación la hace solo el agente en cada muestra: si los cuatro rieles coinciden, manda `volt_valid: false` y el panel muestra "—" en vez de un número inventado (el motivo aparece en el tooltip de la tarjeta). El servidor repite la misma comparación sobre los rieles recibidos, así que un agente viejo —sin `volt_valid`— también queda cubierto sin redesplegar nada. Mientras la lectura no sea válida, `volt_core` no se evalúa contra ningún umbral ni tiñe la tarjeta.
+
+Además el umbral viene en `null`, que desactiva la métrica por completo. **La señal real de problemas de alimentación es la casilla "5V"**, que sale del bit de subvoltaje de `get_throttled` y sí funciona en estos equipos. Si tu firmware devuelve lecturas reales, se le pueden poner límites de nuevo:
 
 ```jsonc
 "volt_core": { "warnBelow": 0.82, "critBelow": 0.78, "warn": 1.0, "crit": 1.1 }
@@ -309,9 +319,9 @@ Nivel syslog: crítico → 2, aviso → 4, vuelta a normal / info → 6. Se logu
 Una línea JSON por mensaje sobre TCP:
 
 ```
-→ {"type":"hello","ip":"10.0.1.17","mac":"dc:a6:32:aa:bb:cc","iface":"eth0","ifaces":[{"name":"eth0","ip":"10.0.1.17","mac":"dc:a6:32:aa:bb:cc"}],"id":"banca-07","banca":"7","host":"rpi07","token":"…","version":"1.0.0","model":"Raspberry Pi 4 Model B Rev 1.4","kernel":"6.1.21-v8+","arch":"aarch64"}
+→ {"type":"hello","ip":"10.0.1.17","mac":"dc:a6:32:aa:bb:cc","iface":"eth0","ifaces":[{"name":"eth0","ip":"10.0.1.17","mac":"dc:a6:32:aa:bb:cc"}],"id":"banca-07","banca":"7","host":"rpi07","token":"…","version":"1.1.0","model":"Raspberry Pi 4 Model B Rev 1.4","kernel":"6.1.21-v8+","arch":"aarch64"}
 ← {"type":"hello_ack","serverTime":…}
-→ {"type":"metrics","id":"banca-07","ip":"10.0.1.17","ts":…,"temp_c":52.1,"volt_core":0.85,"volt_sdram_c":1.1,…,"throttled":"0x0","throttled_raw":0,"cpu_pct":12.3,"cpu_mhz":1500,"load1":0.4,"mem_total_mb":3794,"mem_used_mb":610,"mem_pct":16.1,"lat_ms":1.2,"lat_target":"10.0.0.1","lat_method":"icmp","uptime_s":86400,"source":"mailbox"}
+→ {"type":"metrics","id":"banca-07","ip":"10.0.1.17","ts":…,"temp_c":52.1,"volt_core":0.85,"volt_sdram_c":1.1,…,"volt_valid":true,"throttled":"0x0","throttled_raw":0,"cpu_pct":12.3,"cpu_mhz":1500,"load1":0.4,"mem_total_mb":3794,"mem_used_mb":610,"mem_pct":16.1,"lat_ms":1.2,"lat_target":"10.0.0.1","lat_method":"icmp","uptime_s":86400,"source":"mailbox"}
 ← {"type":"ping","t":…}            → {"type":"pong","t":…}
 ← {"type":"cmd","cmd":"reboot","req":"uuid","by":"admin@10.0.0.5"}
 → {"type":"ack","req":"uuid","cmd":"reboot","ok":true}      (y reinicia)
@@ -325,7 +335,7 @@ Una línea JSON por mensaje sobre TCP:
 
 ## 4. Solución de problemas
 
-* **Voltaje "—" / "sin dato"**: no hay `/dev/vcio` ni `vcgencmd`. Verificar `ls -l /dev/vcio`; si el driver no está, cargar `vcio` o compilar el kernel con `CONFIG_RASPBERRYPI_FIRMWARE` + vcio. Se puede bajar `thresholds.unknownLevel` a `"ok"` para que no tiña las tarjetas.
+* **Voltaje "—" / "sin dato"**: o no hay `/dev/vcio` ni `vcgencmd`, o el firmware devuelve el mismo valor en los cuatro rieles y la lectura se descarta (el tooltip de la tarjeta distingue un caso del otro; en el log del agente queda `volt_valid=false`). Para el primer caso, verificar `ls -l /dev/vcio`; si el driver no está, cargar `vcio` o compilar el kernel con `CONFIG_RASPBERRYPI_FIRMWARE` + vcio, y se puede bajar `thresholds.unknownLevel` a `"ok"` para que no tiña las tarjetas. El segundo no se arregla desde el agente: la señal de alimentación es la casilla "5V".
 * **Latencia por TCP en vez de ICMP** (`lat_method: "tcp"`): faltan permisos ICMP; ver "Permisos".
 * **La banca no aparece en su lugar**: el `id` del agente no coincide con el de `stations`. Aparece igual al final del panel si `allowUnknown` es true.
 * **Reinicio "el agente no respondió"**: el agente está conectado pero no contestó en 5 s; revisar `journalctl -u rpimon` o `/var/log/rpimon.log`.

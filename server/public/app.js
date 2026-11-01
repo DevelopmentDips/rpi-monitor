@@ -53,11 +53,12 @@ function render(d) {
     d.mac && `MAC ${d.mac}`,
     d.peerIp && d.peerIp !== d.ip && `visto por el servidor como ${d.peerIp}`,
     ifaceList && `interfaces:\n${ifaceList}`,
+    d.metrics?.volt_valid === false && `voltaje: el firmware devuelve el mismo valor para todos los rieles (${fmt.volt(d.metrics.volt_core)}); sin lectura real — ver casilla 5V`,
     d.model, d.host && `host ${d.host}`, d.kernel && `kernel ${d.kernel}`, d.version && `rpimon ${d.version}`, d.metrics?.lat_target && `latencia hacia ${d.metrics.lat_target} (${d.metrics.lat_method})`, d.metrics?.cpu_mhz && `ARM ${d.metrics.cpu_mhz} MHz · load ${d.metrics.load1}`, d.metrics?.throttled && `throttled ${d.metrics.throttled}`, d.lastReboot && `último reinicio ${fmt.time(d.lastReboot.at)} por ${d.lastReboot.by}`].filter(Boolean).join('\n');
   const m = d.metrics || {}, st = d.online ? d.status : {};
   const set = (key, text) => { const me = $(`.metric[data-m="${key}"]`, el); me.className = `metric ${st[key] || ''}`; $('.val', me).textContent = text; };
   set('temp_c', fmt.temp(m.temp_c));
-  set('volt_core', fmt.volt(m.volt_core));
+  set('volt_core', m.volt_valid === false ? '—' : fmt.volt(m.volt_core));
   set('cpu_pct', fmt.pct(m.cpu_pct));
   set('mem_pct', fmt.pct(m.mem_pct));
   set('lat_ms', d.online ? fmt.lat(m.lat_ms) : '—');

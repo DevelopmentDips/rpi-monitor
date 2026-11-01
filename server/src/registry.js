@@ -1,8 +1,8 @@
 // Estado en memoria de todas las bancas + detección de transiciones (alertas).
 import { EventEmitter } from 'node:events';
-import { evaluate, worst, describe } from './thresholds.js';
+import { evaluate, worst, describe, voltReadingBogus } from './thresholds.js';
 
-const METRIC_KEYS = ['ts', 'temp_c', 'volt_core', 'volt_sdram_c', 'volt_sdram_p', 'volt_sdram_i', 'throttled', 'throttled_raw',
+const METRIC_KEYS = ['ts', 'temp_c', 'volt_core', 'volt_sdram_c', 'volt_sdram_p', 'volt_sdram_i', 'volt_valid', 'throttled', 'throttled_raw',
   'cpu_pct', 'cpu_mhz', 'load1', 'mem_total_mb', 'mem_used_mb', 'mem_pct', 'lat_ms', 'lat_target', 'lat_method', 'uptime_s', 'source'];
 
 export class Registry extends EventEmitter {
@@ -75,6 +75,7 @@ export class Registry extends EventEmitter {
     if (ip) d.peerIp = ip;
     const m = {};
     for (const k of METRIC_KEYS) if (msg[k] !== undefined) m[k] = msg[k];
+    if (voltReadingBogus(m)) m.volt_valid = false;
     m.receivedAt = Date.now();
     d.metrics = m;
     const prev = d.status || {};

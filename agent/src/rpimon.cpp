@@ -47,7 +47,7 @@
 #include <string>
 #include <vector>
 
-static const char* RPIMON_VERSION = "1.0.0";
+static const char* RPIMON_VERSION = "1.1.0";
 static volatile sig_atomic_t g_stop = 0;
 static void on_signal(int) { g_stop = 1; }
 
@@ -359,6 +359,7 @@ private:
 struct Metrics {
     double temp_c = NAN;
     double volt_core = NAN, volt_sdram_c = NAN, volt_sdram_p = NAN, volt_sdram_i = NAN;
+    bool volt_valid = false;     // false = el firmware no informa voltajes reales
     bool throttled_ok = false;
     uint32_t throttled = 0;
     double cpu_pct = NAN, cpu_mhz = NAN, load1 = NAN;
@@ -390,6 +391,14 @@ public:
         m.volt_sdram_c = read_volt(2, "sdram_c");
         m.volt_sdram_p = read_volt(3, "sdram_p");
         m.volt_sdram_i = read_volt(4, "sdram_i");
+        m.volt_valid = volts_usable(m);
+        // Solo avisa del firmware que devuelve una constante; la falta de sensor ya se
+        // avisó al arrancar y se distingue en el panel porque no hay ningún valor.
+        if (!m.volt_valid && std::isfinite(m.volt_core) && !volt_warned_) {
+            volt_warned_ = true;
+            LOGW("el firmware devuelve el mismo voltaje (%.4f V) para core y sdram: lectura sin "
+                 "significado, se informa volt_valid=false", m.volt_core);
+        }
         m.throttled_ok = read_throttled(m.throttled);
         m.cpu_mhz = read_cpu_mhz();
         m.cpu_pct = sample_cpu();
@@ -411,7 +420,22 @@ private:
     std::string hwmon_volt_;
     unsigned long long prev_busy_ = 0, prev_total_ = 0;
     bool have_prev_ = false;
+    bool volt_warned_ = false;
     uint16_t icmp_seq_ = 0;
+
+    // Hay firmwares que no implementan la consulta de voltaje y devuelven la misma
+    // constante para los cuatro rieles (p.ej. 1.2000 V en core y sdram). En una Pi 4 el
+    // core ronda 0,83–0,95 V y los sdram andan por 1,1 V, así que si coinciden exactamente
+    // la lectura no mide nada y no hay que publicarla como si fuera real.
+    static bool volts_usable(const Metrics& m) {
+        if (!std::isfinite(m.volt_core)) return false;
+        if (!std::isfinite(m.volt_sdram_c) || !std::isfinite(m.volt_sdram_p) || !std::isfinite(m.volt_sdram_i))
+            return true;  // sin los otros rieles no hay con qué comparar
+        const double eps = 1e-6;
+        return !(fabs(m.volt_core - m.volt_sdram_c) < eps &&
+                 fabs(m.volt_core - m.volt_sdram_p) < eps &&
+                 fabs(m.volt_core - m.volt_sdram_i) < eps);
+    }
 
     static std::string find_hwmon(const std::string& name) {
         for (int i = 0; i < 16; i++) {
@@ -734,6 +758,7 @@ static std::string metrics_json(const Config& cfg, const Metrics& m) {
         ",\"volt_sdram_c\":" + jnum(m.volt_sdram_c, 4) +
         ",\"volt_sdram_p\":" + jnum(m.volt_sdram_p, 4) +
         ",\"volt_sdram_i\":" + jnum(m.volt_sdram_i, 4) +
+        ",\"volt_valid\":" + (m.volt_valid ? "true" : "false") +
         ",\"throttled\":" + (m.throttled_ok ? jstr(thr) : "null") +
         ",\"throttled_raw\":" + (m.throttled_ok ? std::to_string(m.throttled) : "null") +
         ",\"cpu_pct\":" + jnum(m.cpu_pct, 1) +

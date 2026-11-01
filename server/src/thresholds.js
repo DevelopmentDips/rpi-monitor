@@ -48,12 +48,23 @@ export function decodeThrottled(raw) {
   };
 }
 
+// Hay firmwares que no implementan la consulta de voltaje y devuelven la misma constante
+// para los cuatro rieles: el número existe pero no mide nada. El agente lo marca con
+// volt_valid=false; la comparación de rieles cubre a los agentes anteriores a esa versión.
+export function voltReadingBogus(m) {
+  if (!m) return false;
+  if (m.volt_valid === false) return true;
+  const rails = [m.volt_core, m.volt_sdram_c, m.volt_sdram_p, m.volt_sdram_i];
+  return rails.every((v) => typeof v === 'number' && v === rails[0]);
+}
+
 export function evaluate(m, th) {
   const unk = th.unknownLevel || 'warn';
   const norm = (l) => (l === 'unknown' ? unk : l);
   const s = {};
   s.temp_c = norm(levelOf(m.temp_c, th.temp_c));
-  s.volt_core = norm(levelOf(m.volt_core, th.volt_core));
+  // Sin lectura real de voltaje la métrica no se evalúa: no alarma ni tiñe la tarjeta.
+  if (!voltReadingBogus(m)) s.volt_core = norm(levelOf(m.volt_core, th.volt_core));
   // Latencia: null significa "sin respuesta" -> crítico
   s.lat_ms = m.lat_ms == null ? 'crit' : levelOf(m.lat_ms, th.lat_ms);
   s.cpu_pct = norm(levelOf(m.cpu_pct, th.cpu_pct));

@@ -43,6 +43,14 @@ docker-arm64-glibc:
 	docker run --rm --platform linux/arm64 -v "$(CURDIR)":/src -w /src gcc:13 \
 	  sh -c 'make STATIC=1 && strip rpimon && mv rpimon rpimon-arm64'
 
+# Paquete para copiar a mano a una banca (los binarios no van en git, el zip sí).
+# Rehacerlo después de cada docker-arm64/docker-armv7, o queda con binarios viejos.
+ZIP_FILES = rpimon-arm64 rpimon-armv7 rpimon.conf.example rpimon.init rpimon.service
+zip: $(ZIP_FILES)
+	rm -f rpimon.zip
+	zip -q -X rpimon.zip $(ZIP_FILES)
+	@unzip -l rpimon.zip
+
 install: $(TARGET)
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -m 755 $(TARGET) $(DESTDIR)$(PREFIX)/bin/$(TARGET)
@@ -51,4 +59,4 @@ install: $(TARGET)
 clean:
 	rm -f $(TARGET) rpimon-arm64 rpimon-armv7
 
-.PHONY: all strip docker-arm64 docker-armv7 docker-arm64-glibc install clean
+.PHONY: all strip zip docker-arm64 docker-armv7 docker-arm64-glibc install clean

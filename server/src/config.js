@@ -20,8 +20,11 @@ const DEFAULTS = {
 };
 
 function merge(base, over) {
-  if (Array.isArray(base) || Array.isArray(over)) return over ?? base;
-  if (typeof base !== 'object' || base === null || typeof over !== 'object' || over === null) return over ?? base;
+  // null explícito en el archivo = desactivar la clave (p. ej. un umbral), no volver al default.
+  if (over === undefined) return base;
+  if (over === null) return null;
+  if (Array.isArray(base) || Array.isArray(over)) return over;
+  if (typeof base !== 'object' || base === null || typeof over !== 'object') return over;
   const out = { ...base };
   for (const k of Object.keys(over)) out[k] = merge(base[k], over[k]);
   return out;

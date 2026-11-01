@@ -1,6 +1,12 @@
 // Simula N agentes contra el servidor para probar el panel sin Raspberrys.
 //   node tools/simulate-agents.js [host] [port] [token] [count]
+//
+// SIM_VOLT=fixed    firmware que devuelve la misma constante en los cuatro rieles
+//                   (agente viejo, sin volt_valid: lo detecta el servidor)
+// SIM_VOLT=invalid  lo mismo pero con el agente nuevo marcando volt_valid=false
 import net from 'node:net';
+
+const VOLT_MODE = process.env.SIM_VOLT || 'real';
 
 const [host = '127.0.0.1', port = '7070', token = 'cambiar-este-token', count = '53', start = '0'] = process.argv.slice(2);
 const N = Number(count), FIRST = Number(start);
@@ -43,8 +49,11 @@ function agent(n) {
     temp = Math.max(35, Math.min(88, temp)); cpu = Math.max(0, Math.min(100, cpu)); mem = Math.max(10, Math.min(99, mem)); lat = Math.max(0.3, lat);
     const spike = Math.random() < 0.02;
     const throttled = n % 13 === 0 ? 0x50000 : n % 17 === 0 ? 0x50005 : 0;
-    const m = { type: 'metrics', id, ip, ts: Date.now(), temp_c: +temp.toFixed(1), volt_core: +(0.85 + (Math.random() - 0.5) * 0.02).toFixed(4),
-      volt_sdram_c: 1.1, volt_sdram_p: 1.1, volt_sdram_i: 1.1, throttled: '0x' + throttled.toString(16), throttled_raw: throttled,
+    const volts = VOLT_MODE === 'real'
+      ? { volt_core: +(0.85 + (Math.random() - 0.5) * 0.02).toFixed(4), volt_sdram_c: 1.1, volt_sdram_p: 1.1, volt_sdram_i: 1.1 }
+      : { volt_core: 1.2, volt_sdram_c: 1.2, volt_sdram_p: 1.2, volt_sdram_i: 1.2, ...(VOLT_MODE === 'invalid' ? { volt_valid: false } : {}) };
+    const m = { type: 'metrics', id, ip, ts: Date.now(), temp_c: +temp.toFixed(1), ...volts,
+      throttled: '0x' + throttled.toString(16), throttled_raw: throttled,
       cpu_pct: +cpu.toFixed(1), cpu_mhz: cpu > 50 ? 1500 : 600, load1: +(cpu / 25).toFixed(2), mem_total_mb: 3794, mem_used_mb: Math.round(3794 * mem / 100), mem_pct: +mem.toFixed(1),
       lat_ms: spike ? null : +(lat + (Math.random() < 0.05 ? 150 : 0)).toFixed(2), lat_target: host, lat_method: 'icmp', uptime_s: 86400 * n + 1234, source: 'sim' };
     if (sock.writable) sock.write(JSON.stringify(m) + '\n');
